@@ -154,7 +154,7 @@ def cancel_trade(update: Update, context: CallbackContext) -> None:
         update.message.reply_text(f'Error canceling trade: {str(e)}')
 
 def main() -> None:
-    updater = Updater("YOUR_TELEGRAM_BOT_TOKEN")  # Replace with your bot token
+    updater = Updater("7671153978:AAHLBbXdZAwZ6qmb5jzyGMarx2X8bNboUX4")  # Replace with your bot token
     dispatcher = updater.dispatcher
 
     dispatcher.add_handler(CommandHandler("start", start))
