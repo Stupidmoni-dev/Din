@@ -1,6 +1,6 @@
 import logging
 from telegram import Update
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, Enum
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -53,20 +53,20 @@ class Escrow(Base):
 Base.metadata.create_all(engine)
 
 # Command handlers
-def start(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text('Welcome to the P2P Trading Bot! Please register using /register.')
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text('Welcome to the P2P Trading Bot! Please register using /register.')
 
-def register(update: Update, context: CallbackContext) -> None:
+async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.message.from_user.id
     user = User(telegram_id=user_id)
     session.add(user)
     session.commit()
-    update.message.reply_text('You have been registered! Use /add_wallet to add your wallets.')
+    await update.message.reply_text('You have been registered! Use /add_wallet to add your wallets.')
 
-def add_wallet(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text('Please send your wallet address for BTC, ETH, SOL, USDT in the format: /add_wallet BTC your_btc_address')
+async def add_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text('Please send your wallet address for BTC, ETH, SOL, USDT in the format: /add_wallet BTC your_btc_address')
 
-def handle_add_wallet(update: Update, context: CallbackContext) -> None:
+async def handle_add_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         coin = context.args[0].upper()
         address = context.args[1]
@@ -82,15 +82,15 @@ def handle_add_wallet(update: Update, context: CallbackContext) -> None:
         elif coin == 'USDT':
             user.wallet_usdt = address
         else:
-            update.message.reply_text('Invalid coin type. Please use BTC, ETH, SOL, or USDT.')
+            await update.message.reply_text('Invalid coin type. Please use BTC, ETH, SOL, or USDT.')
             return
         
         session.commit()
-        update.message.reply_text(f'{coin} wallet address added successfully!')
+        await update.message.reply_text(f'{coin} wallet address added successfully!')
     except Exception as e:
-        update.message.reply_text(f'Error adding wallet: {str(e)}')
+        await update.message.reply_text(f'Error adding wallet: {str(e)}')
 
-def create_trade_offer(update: Update, context: CallbackContext) -> None:
+async def create_trade_offer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         coin, price, method, expiration = context.args
         expiration = int(expiration) + int(time.time())  # Set expiration as a timestamp
@@ -98,22 +98,22 @@ def create_trade_offer(update: Update, context: CallbackContext) -> None:
         trade_offer = TradeOffer(user_id=user_id, coin=coin, price=float(price), method=method, status='active', expiration=expiration)
         session.add(trade_offer)
         session.commit()
-        update.message.reply_text('Trade offer created successfully!')
+        await update.message.reply_text('Trade offer created successfully!')
     except Exception as e:
-        update.message.reply_text(f'Error creating trade offer: {str(e)}')
+        await update.message.reply_text(f'Error creating trade offer: {str(e)}')
 
-def search_trade_offers(update: Update, context: CallbackContext) -> None:
+async def search_trade_offers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     coin = context.args[0] if context.args else None
     offers = session.query(TradeOffer).filter(TradeOffer.coin == coin, TradeOffer.status == 'active').all()
     if offers:
-        response = "Available offers :\n"
+        response = "Available offers:\n"
         for offer in offers:
             response += f"ID: {offer.id}, Price: {offer.price}, Method: {offer.method}, Expiration: {time.ctime(offer.expiration)}\n"
-        update.message.reply_text(response)
+        await update.message.reply_text(response)
     else:
-        update.message.reply_text('No offers found.')
+        await update.message.reply_text('No offers found.')
 
-def initiate_trade(update: Update, context: CallbackContext) -> None:
+async def initiate_trade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         offer_id = int(context.args[0])
         offer = session.query(TradeOffer).filter(TradeOffer.id == offer_id).first()
@@ -121,54 +121,52 @@ def initiate_trade(update: Update, context: CallbackContext) -> None:
             escrow = Escrow(trade_offer_id=offer_id)
             session.add(escrow)
             session.commit()
-            update.message.reply_text('Trade initiated and funds are in escrow.')
+            await update.message.reply_text('Trade initiated and funds are in escrow.')
         else:
-            update.message.reply_text('Trade offer not found.')
+            await update.message.reply_text('Trade offer not found.')
     except Exception as e:
-        update.message.reply_text(f'Error initiating trade: {str(e)}')
+        await update.message.reply_text(f'Error initiating trade: {str(e)}')
 
-def complete_trade(update: Update, context: CallbackContext) -> None:
+async def complete_trade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         escrow_id = int(context.args[0])
         escrow = session.query(Escrow).filter(Escrow.id == escrow_id).first()
         if escrow:
             escrow.status = TradeStatus.COMPLETED
             session.commit()
-            update.message.reply_text('Trade completed successfully!')
+            await update.message.reply_text('Trade completed successfully!')
         else:
-            update.message.reply_text('Escrow not found.')
+            await update.message.reply_text('Escrow not found.')
     except Exception as e:
-        update.message.reply_text(f'Error completing trade: {str(e)}')
+        await update.message.reply_text(f'Error completing trade: {str(e)}')
 
-def cancel_trade(update: Update, context: CallbackContext) -> None:
+async def cancel_trade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         escrow_id = int(context.args[0])
         escrow = session.query(Escrow).filter(Escrow.id == escrow_id).first()
         if escrow:
             escrow.status = TradeStatus.CANCELED
             session.commit()
-            update.message.reply_text('Trade canceled successfully!')
+            await update.message.reply_text('Trade canceled successfully!')
         else:
-            update.message.reply_text('Escrow not found.')
+            await update.message.reply_text('Escrow not found.')
     except Exception as e:
-        update.message.reply_text(f'Error canceling trade: {str(e)}')
+        await update.message.reply_text(f'Error canceling trade: {str(e)}')
 
 def main() -> None:
-    updater = Updater("7671153978:AAHLBbXdZAwZ6qmb5jzyGMarx2X8bNboUX4")  # Replace with your bot token
-    dispatcher = updater.dispatcher
+    application = ApplicationBuilder().token("YOUR_BOT_TOKEN").build()  # Replace with your bot token
 
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(CommandHandler("register", register))
-    dispatcher.add_handler(CommandHandler("add_wallet", add_wallet))
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_add_wallet))
-    dispatcher.add_handler(CommandHandler("create_offer", create_trade_offer))
-    dispatcher.add_handler(CommandHandler("search_offers", search_trade_offers))
-    dispatcher.add_handler(CommandHandler("initiate_trade", initiate_trade))
-    dispatcher.add_handler(CommandHandler("complete_trade", complete_trade))
-    dispatcher.add_handler(CommandHandler("cancel_trade", cancel_trade))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("register", register))
+    application.add_handler(CommandHandler("add_wallet", add_wallet))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_wallet))
+    application.add_handler(CommandHandler("create_offer", create_trade_offer))
+    application.add_handler(CommandHandler("search_offers", search_trade_offers))
+    application.add_handler(CommandHandler("initiate_trade", initiate_trade))
+    application.add_handler(CommandHandler("complete_trade", complete_trade))
+    application.add_handler(CommandHandler("cancel_trade", cancel_trade))
 
-    updater.start_polling()
-    updater.idle()
+    application.run_polling()
 
 if __name__ == '__main__':
     main()
