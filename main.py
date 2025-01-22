@@ -154,7 +154,7 @@ async def cancel_trade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text(f'Error canceling trade: {str(e)}')
 
 def main() -> None:
-    application = ApplicationBuilder().token("YOUR_BOT_TOKEN").build()  # Replace with your bot token
+    application = ApplicationBuilder().token("7671153978:AAHLBbXdZAwZ6qmb5jzyGMarx2X8bNboUX4").build()  # Replace with your bot token
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("register", register))
