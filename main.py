@@ -1,185 +1,174 @@
-import base58
-import requests
-import time
-import os
+import logging
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackContext, filters
-from solana.rpc.api import Client
-from solana.keypair import Keypair
-from solana.publickey import PublicKey
-from solana.transaction import Transaction
-from solana.token.instructions import transfer as token_transfer
-from solana.token.constants import TOKEN_PROGRAM_ID
-import asyncio
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, Enum
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+from enum import Enum as PyEnum
+import time
 
-# ============ CONFIGURATION ============
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # Store your bot token in an environment variable
-OWNER_ID = os.getenv("TELEGRAM_OWNER_ID")  # Store your Telegram ID in an environment variable
-RPC_URL = "https://api.mainnet-beta.solana.com"
-solana_client = Client(RPC_URL)
+# Set up logging
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# === YOUR WALLET ===
-YOUR_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY")  # Store your private key in an environment variable
-your_wallet = Keypair.from_secret_key(base58.b58decode(YOUR_PRIVATE_KEY))
+# Database setup
+Base = declarative_base()
+engine = create_engine('postgresql://user:password@localhost/dbname')  # Update with your DB credentials
+Session = sessionmaker(bind=engine)
+session = Session()
 
-# === MONITORED WALLETS ===
-wallets_to_monitor = [
-    "4WAfwi1V6jUmFasSgMK3roUo6y9mHXxcUV75tVU9NtnQ",
-    "CQvwRHaxNUScPrE3VTJsbw8LNRudaKS52LZb4r4zcuuB"
-]
+# Define your database models
+class User(Base):
+    __tablename__ = 'users'
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(String, unique=True)
+    wallet_btc = Column(String)
+    wallet_eth = Column(String)
+    wallet_sol = Column(String)
+    wallet_usdt = Column(String)
+    rating = Column(Float, default=0.0)
+    review_count = Column(Integer, default=0)
 
-is_copy_trading_active = False
+class TradeOffer(Base):
+    __tablename__ = 'trade_offers'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'))
+    coin = Column(String)
+    price = Column(Float)
+    method = Column(String)
+    status = Column(String)  # e.g., 'active', 'completed', 'canceled'
+    expiration = Column(Integer)  # Timestamp for expiration
 
-# === COMMAND HANDLERS ===
+class TradeStatus(PyEnum):
+    PENDING = "pending"
+    COMPLETED = "completed"
+    CANCELED = "canceled"
 
-async def start(update: Update, context: CallbackContext):
-    await update.message.reply_text(
-        "🔥 Welcome to Solana Copy Trading Bot! Developed by Stupidmoni-dev. "
-        "Use /help to get the list of commands. I will assist you in creating and importing wallets."
-    )
-    await fetch_and_show_solana_price(update)
+class Escrow(Base):
+    __tablename__ = 'escrows'
+    id = Column(Integer, primary_key=True)
+    trade_offer_id = Column(Integer, ForeignKey('trade_offers.id'))
+    status = Column(Enum(TradeStatus), default=TradeStatus.PENDING)
 
-async def fetch_and_show_solana_price(update: Update):
-    sol_price = await get_solana_price()
-    await update.message.reply_text(f"💰 Current Solana Price: {sol_price} USD")
+# Create tables
+Base.metadata.create_all(engine)
 
-async def get_solana_price():
-    response = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd")
-    data = response.json()
-    return data["solana"]["usd"]
+# Command handlers
+def start(update: Update, context: CallbackContext) -> None:
+    update.message.reply_text('Welcome to the P2P Trading Bot! Please register using /register.')
 
-async def generate_wallet(update: Update, context: CallbackContext):
-    keypair = Keypair.generate()
-    public_key = keypair.public_key
-    private_key = base58.b58encode(keypair.secret_key).decode()
+def register(update: Update, context: CallbackContext) -> None:
+    user_id = update.message.from_user.id
+    user = User(telegram_id=user_id)
+    session.add(user)
+    session.commit()
+    update.message.reply_text('You have been registered! Use /add_wallet to add your wallets.')
 
-    await update.message.reply_text(
-        f"✅ New wallet generated! Here's your private key and public key:\n\n"
-        f"Private Key: {private_key}\nPublic Key: {public_key}"
-    )
+def add_wallet(update: Update, context: CallbackContext) -> None:
+    update.message.reply_text('Please send your wallet address for BTC, ETH, SOL, USDT in the format: /add_wallet BTC your_btc_address')
 
-async def import_wallet(update: Update, context: CallbackContext):
-    await update.message.reply_text("🔑 Please provide your Solana private key to import your wallet.")
-
-async def handle_imported_wallet(update: Update, context: CallbackContext):
-    private_key = update.message.text.strip()
-    
+def handle_add_wallet(update: Update, context: CallbackContext) -> None:
     try:
-        keypair = Keypair.from_secret_key(base58.b58decode(private_key))
-        public_key = keypair.public_key
-        balance = await get_balance(public_key)
-
-        await update.message.reply_text(
-            f"✅ Wallet imported successfully! Public Key: {public_key}\nBalance: {balance} SOL"
-        )
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error importing wallet: Invalid private key or other issue.")
-
-async def get_balance(public_key: PublicKey):
-    balance_response = await solana_client.get_balance(public_key)
-    if 'result' in balance_response:
-        return balance_response['result']['value'] / 10**9  # Convert lamports to SOL
-    else:
-        return 0  # Return 0 if there's no balance or error
-
-async def start_copy(update: Update, context: CallbackContext):
-    global is_copy_trading_active
-    is_copy_trading_active = True
-    await update.message.reply_text("✅ Copy Trading Started!")
-
-async def stop_copy(update: Update, context: CallbackContext):
-    global is_copy_trading_active
-    is_copy_trading_active = False
-    await update.message.reply_text("🛑 Copy Trading Stopped!")
-
-async def help_command(update: Update, context: CallbackContext):
-    await update.message.reply_text(
-        "🛠 Available Commands:\n"
-        "/start - Start the bot\n"
-        "/generate_wallet - Generate a new wallet\n"
-        "/import_wallet - Import an existing wallet\n"
-        "/start_copy - Start copy trading\n"
-        "/stop_copy - Stop copy trading\n"
-        "/help - Show this help message"
-    )
-
-# === MONITOR & COPY TRADES ===
-async def monitor_and_copy_trades(context: CallbackContext):
-    global is_copy_trading_active
-    if not is_copy_trading_active:
-        return
-
-    for wallet in wallets_to_monitor:
-        transactions = await fetch_recent_transactions(wallet)
-
-        for tx in transactions:
-            signature = tx.get("signature")
-            tx_details = await solana_client.get_transaction(signature)
-            if not tx_details.get("result"):
-                continue
-
-            instructions = tx_details["result"]["transaction"]["message"]["instructions"]
-            for instruction in instructions:
-                if "program" in instruction and instruction["program"] == "spl-token":
-                    token_address = instruction["parsed"]["info"]["mint"]
-                    amount = instruction["parsed"]["info"]["amount"]
-                    action = "buy" if instruction["parsed"]["type"] == "transfer" else "sell"
-
-                    await execute_trade(action, token_address, amount)
-                    await context.bot.send_message(OWNER_ID, f"🔄 Copied Trade: {action.upper()} {amount} of {token_address}")
-
-async def fetch_recent_transactions(wallet_address):
-    pub_key = PublicKey(wallet_address)
-    transactions = await solana_client.get_signatures_for_address(pub_key, limit=5)
-    return transactions.get("result", [])
-
-async def execute_trade(action, token_address, amount):
-    print(f"[Trade] {action.upper()} {amount} of {token_address} using {your_wallet.public_key}")
-    
-    destination_address = PublicKey("YourReceiverPublicKey")  # Replace with a valid address
-
-    transfer_instruction = token_transfer(
-        TOKEN_PROGRAM_ID,
-        your_wallet.public_key,
-        destination_address,
-        amount,
-        TOKEN_PROGRAM_ID
-    )
-
-    transaction = Transaction().add(transfer_instruction)
-    try:
-        response = await solana_client.send_transaction(transaction, your_wallet)
-        if response.get("result"):
-            print(f"Transaction successful: {response['result']}")
+        coin = context.args[0].upper()
+        address = context.args[1]
+        user_id = update.message.from_user.id
+        user = session.query(User).filter(User.telegram_id == user_id).first()
+        
+        if coin == 'BTC':
+            user.wallet_btc = address
+        elif coin == 'ETH':
+            user.wallet_eth = address
+        elif coin == 'SOL':
+            user.wallet_sol = address
+        elif coin == 'USDT':
+            user.wallet_usdt = address
         else:
-            print(f"Transaction failed: {response.get('error', 'Unknown error')}")
+            update.message.reply_text('Invalid coin type. Please use BTC, ETH, SOL, or USDT.')
+            return
+        
+        session.commit()
+        update.message.reply_text(f'{coin} wallet address added successfully!')
     except Exception as e:
-        print(f"Error executing trade: {str(e)}")
+        update.message.reply_text(f'Error adding wallet: {str(e)}')
 
-async def rate_limited_request(func, *args, **kwargs):
-    """Rate-limit API requests by introducing a delay between requests."""
-    await asyncio.sleep(1)  # Introduce a 1-second delay between requests to avoid overloading
-    return await func(*args, **kwargs)
+def create_trade_offer(update: Update, context: CallbackContext) -> None:
+    try:
+        coin, price, method, expiration = context.args
+        expiration = int(expiration) + int(time.time())  # Set expiration as a timestamp
+        user_id = update.message.from_user.id
+        trade_offer = TradeOffer(user_id=user_id, coin=coin, price=float(price), method=method, status='active', expiration=expiration)
+        session.add(trade_offer)
+        session.commit()
+        update.message.reply_text('Trade offer created successfully!')
+    except Exception as e:
+        update.message.reply_text(f'Error creating trade offer: {str(e)}')
 
-# === TELEGRAM BOT SETUP ===
-async def main():
-    application = Application.builder().token(BOT_TOKEN).build()
+def search_trade_offers(update: Update, context: CallbackContext) -> None:
+    coin = context.args[0] if context.args else None
+    offers = session.query(TradeOffer).filter(TradeOffer.coin == coin, TradeOffer.status == 'active').all()
+    if offers:
+        response = "Available offers :\n"
+        for offer in offers:
+            response += f"ID: {offer.id}, Price: {offer.price}, Method: {offer.method}, Expiration: {time.ctime(offer.expiration)}\n"
+        update.message.reply_text(response)
+    else:
+        update.message.reply_text('No offers found.')
 
-    # Add handlers for commands and messages
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("generate_wallet", generate_wallet))
-    application.add_handler(CommandHandler("import_wallet", import_wallet))
-    application.add_handler(CommandHandler("start_copy", start_copy))
-    application.add_handler(CommandHandler("stop_copy", stop_copy))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_imported_wallet))
+def initiate_trade(update: Update, context: CallbackContext) -> None:
+    try:
+        offer_id = int(context.args[0])
+        offer = session.query(TradeOffer).filter(TradeOffer.id == offer_id).first()
+        if offer:
+            escrow = Escrow(trade_offer_id=offer_id)
+            session.add(escrow)
+            session.commit()
+            update.message.reply_text('Trade initiated and funds are in escrow.')
+        else:
+            update.message.reply_text('Trade offer not found.')
+    except Exception as e:
+        update.message.reply_text(f'Error initiating trade: {str(e)}')
 
-    # Run trading bot every 10 seconds
-    job_queue = application.job_queue
-    job_queue.run_repeating(monitor_and_copy_trades, interval=10, first=10)
+def complete_trade(update: Update, context: CallbackContext) -> None:
+    try:
+        escrow_id = int(context.args[0])
+        escrow = session.query(Escrow).filter(Escrow.id == escrow_id).first()
+        if escrow:
+            escrow.status = TradeStatus.COMPLETED
+            session.commit()
+            update.message.reply_text('Trade completed successfully!')
+        else:
+            update.message.reply_text('Escrow not found.')
+    except Exception as e:
+        update.message.reply_text(f'Error completing trade: {str(e)}')
 
-    await application.run_polling()
-    print("🚀 Telegram Bot is Running!")
+def cancel_trade(update: Update, context: CallbackContext) -> None:
+    try:
+        escrow_id = int(context.args[0])
+        escrow = session.query(Escrow).filter(Escrow.id == escrow_id).first()
+        if escrow:
+            escrow.status = TradeStatus.CANCELED
+            session.commit()
+            update.message.reply_text('Trade canceled successfully!')
+        else:
+            update.message.reply_text('Escrow not found.')
+    except Exception as e:
+        update.message.reply_text(f'Error canceling trade: {str(e)}')
 
-if __name__ == "__main__":
-    asyncio.run(main())  # Ensure the coroutine is properly awaited
+def main() -> None:
+    updater = Updater("YOUR_TELEGRAM_BOT_TOKEN")  # Replace with your bot token
+    dispatcher = updater.dispatcher
+
+    dispatcher.add_handler(CommandHandler("start", start))
+    dispatcher.add_handler(CommandHandler("register", register))
+    dispatcher.add_handler(CommandHandler("add_wallet", add_wallet))
+    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_add_wallet))
+    dispatcher.add_handler(CommandHandler("create_offer", create_trade_offer))
+    dispatcher.add_handler(CommandHandler("search_offers", search_trade_offers))
+    dispatcher.add_handler(CommandHandler("initiate_trade", initiate_trade))
+    dispatcher.add_handler(CommandHandler("complete_trade", complete_trade))
+    dispatcher.add_handler(CommandHandler("cancel_trade", cancel_trade))
+
+    updater.start_polling()
+    updater.idle()
+
+if __name__ == '__main__':
+    main()
